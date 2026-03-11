@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "taskq-core",
+    "taskq-runtime",
+    "taskq-backend-memory",
+]
