@@ -1,1 +1,3 @@
-// In-memory QueueBackend implementation — coming in Phase 1.
+mod backend;
+
+pub use backend::{InMemoryBackend, InMemoryBackendConfig};

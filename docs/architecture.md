@@ -27,9 +27,11 @@ The system is split into three layers, each in its own crate:
 
 **`taskq-core`** defines the domain. It contains the `Task` model, error types, and the trait interfaces (`QueueBackend`, `TaskHandler`, `RetryPolicy`) that the other crates program against. It has no runtime dependencies — no Tokio, no I/O. This is intentional: the domain layer is pure data and contracts.
 
-**`taskq-runtime`** owns execution. It will contain the worker pool that polls a backend for tasks, dispatches them to handlers, and coordinates retries, dead-lettering, and shutdown. It depends on `taskq-core` for types and on Tokio for async execution.
+**`taskq-runtime`** owns execution. It contains the worker pool that polls a backend for tasks, dispatches them to handlers, and coordinates retries, dead-lettering, and shutdown. Workers use `tokio_util::CancellationToken` for graceful shutdown — they check cancellation between polls and finish in-flight work before exiting. The `WorkerPool` spawns N concurrent workers as Tokio tasks and shuts them down with a configurable timeout. It depends on `taskq-core` for types and on Tokio for async execution.
 
 **Backend crates** (`taskq-backend-memory`, and later `taskq-backend-redis`) implement the `QueueBackend` trait. Each one handles storage and retrieval of tasks using a different technology. The runtime does not know or care which backend it talks to — it operates through the trait.
+
+**`taskq-backend-memory`** provides an `InMemoryBackend` for development and testing. It uses `HashMap<TaskId, Task>` for O(1) task lookup and `HashMap<String, VecDeque<TaskId>>` per queue for FIFO ordering. It uses `std::sync::Mutex` (not Tokio's) since no `.await` is held under the lock. `reserve` skips tasks with `scheduled_at` in the future, which is how retry backoff delays are enforced without blocking workers.
 
 This separation means you can swap backends without touching the worker pool, change retry logic without touching storage, or test the full pipeline with an in-memory backend that requires no external services.
 
@@ -39,7 +41,7 @@ This separation means you can swap backends without touching the worker pool, ch
 
 **Worker** — A Tokio task that loops: reserve a task from the backend, pass it to a handler, then ack or nack based on the result. Multiple workers run concurrently in a pool with bounded concurrency.
 
-**Queue backend** — The storage layer. Responsible for persisting tasks, handing them out to workers (reservation), and tracking their state. The `QueueBackend` trait defines five operations: `enqueue`, `reserve`, `ack`, `nack`, and `move_to_dlq`.
+**Queue backend** — The storage layer. Responsible for persisting tasks, handing them out to workers (reservation), and tracking their state. The `QueueBackend` trait defines five operations: `enqueue`, `reserve`, `ack`, `nack` (with an optional `retry_after` timestamp for delayed visibility), and `move_to_dlq`.
 
 **Retry policy** — A pure function that looks at a failed task (particularly its attempt count and max attempts) and decides: retry after a delay, or give up and dead-letter it. Implemented as the sync `RetryPolicy` trait, separate from the backend and runtime so that retry logic is testable without I/O.
 
@@ -72,7 +74,7 @@ Pending ──reserve──> Active ──ack──> Completed
 
 **At-least-once delivery.** A task is only removed from the queue after an explicit `ack`. If a worker crashes mid-processing, the task remains `Active` and can be reclaimed after its visibility deadline expires. This means a task might be delivered more than once — handlers must tolerate duplicates.
 
-**Retry with exponential backoff.** The `RetryPolicy` trait allows configurable backoff strategies. A typical implementation doubles the delay on each attempt (e.g., 1s, 2s, 4s, 8s) with optional jitter to avoid thundering herds. The policy is a pure function of the task state, making it easy to test deterministically.
+**Retry with exponential backoff.** The `RetryPolicy` trait allows configurable backoff strategies. The built-in `ExponentialBackoff` implementation computes `min(base_delay * 2^(attempts-1), max_delay)`, doubling the delay on each attempt (e.g., 1s, 2s, 4s, 8s) and capping at a configurable maximum. The policy is a pure function of the task state, making it easy to test deterministically. When a retry is needed, the runtime passes the computed delay to `nack` as a `retry_after` timestamp. The backend sets `scheduled_at` on the task, and `reserve` skips tasks whose `scheduled_at` is in the future — so workers are never blocked sleeping for retries.
 
 **Dead-letter queue.** After `max_attempts` failures, a task is moved to the DLQ rather than retried forever. This prevents a single bad message from consuming worker capacity indefinitely. The DLQ is a logical concept managed by the backend — it could be a separate queue, a status flag, or a different storage location depending on the implementation.
 
@@ -86,10 +88,19 @@ Unbounded queues eventually run out of memory. The system addresses this at mult
 
 The goal is that every buffer in the system has a bound, so load increases degrade performance gracefully rather than causing cascading failures.
 
+## Current State
+
+Phase 0 and Phase 1 are complete. The system has:
+
+- **`ExponentialBackoff`** — a built-in `RetryPolicy` with configurable base delay and max delay
+- **`InMemoryBackend`** — a fully functional `QueueBackend` with FIFO ordering, capacity limits, DLQ storage, and `scheduled_at`-based retry visibility
+- **`WorkerPool`** — spawns concurrent workers that poll, process, ack/nack, and shut down gracefully with a configurable timeout
+- **Structured tracing** — `#[instrument]` spans on all backend operations and worker loops, with structured fields (`task_id`, `queue`, `worker_id`, `attempt`)
+
 ## Future Extensions
 
 - **Redis backend** — Durable storage using Redis lists and sorted sets, enabling multi-process worker pools and persistence across restarts.
-- **Observability** — Structured tracing spans around enqueue/reserve/ack operations, metrics for queue depth, processing latency, retry rates, and DLQ counts.
+- **Metrics** — Counters and gauges for queue depth, processing latency, retry rates, and DLQ counts.
 - **Visibility timeout** — A deadline on reserved tasks. If a worker does not ack before the deadline, the task becomes available for another worker. Prevents stuck tasks from blocking the queue.
 - **Leader election** — A coordination mechanism so that only one node runs periodic maintenance tasks like reclaiming expired leases.
 - **Additional backends** — NATS JetStream or other messaging systems, demonstrating that the trait abstraction holds up across fundamentally different storage models.

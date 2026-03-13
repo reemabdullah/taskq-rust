@@ -15,8 +15,8 @@ The system is organized as a Cargo workspace with clear separation of concerns:
 ```
 taskq-rs/
 ├── taskq-core/              # Domain types, traits, error types
-├── taskq-runtime/           # Worker pool, dispatcher, shutdown (WIP)
-├── taskq-backend-memory/    # In-memory backend for dev/test (WIP)
+├── taskq-runtime/           # Worker pool, graceful shutdown, retry orchestration
+├── taskq-backend-memory/    # In-memory backend for dev/test
 ├── taskq-backend-redis/     # Redis backend (planned)
 └── taskq-backend-nats/      # NATS backend (planned)
 ```
@@ -33,7 +33,7 @@ pub trait QueueBackend: Send + Sync {
     async fn enqueue(&self, task: Task) -> Result<TaskId, QueueError>;
     async fn reserve(&self, queue: &str) -> Result<Option<Task>, QueueError>;
     async fn ack(&self, id: &TaskId) -> Result<(), QueueError>;
-    async fn nack(&self, id: &TaskId) -> Result<(), QueueError>;
+    async fn nack(&self, id: &TaskId, retry_after: Option<DateTime<Utc>>) -> Result<(), QueueError>;
     async fn move_to_dlq(&self, id: &TaskId) -> Result<(), QueueError>;
 }
 ```
@@ -72,18 +72,18 @@ Pending ──reserve──▶ Active ──ack──▶ Completed
 
 Each task carries:
 
-| Field | Type | Purpose |
-|---|---|---|
-| `id` | `TaskId` (UUID) | Unique identifier |
-| `queue` | `String` | Routing key |
-| `payload` | `Vec<u8>` | Opaque bytes — handlers deserialize as needed |
-| `metadata` | `HashMap<String, String>` | Headers, trace context, custom tags |
-| `status` | `TaskStatus` | Lifecycle state |
-| `attempts` | `u32` | How many times this task has been tried |
-| `max_attempts` | `u32` | Retry limit before dead-lettering |
-| `created_at` | `DateTime<Utc>` | Creation timestamp |
-| `scheduled_at` | `Option<DateTime<Utc>>` | Delayed execution (future use) |
-| `visibility_deadline` | `Option<DateTime<Utc>>` | Lease expiry for reservation semantics |
+| Field                 | Type                      | Purpose                                       |
+| --------------------- | ------------------------- | --------------------------------------------- |
+| `id`                  | `TaskId` (UUID)           | Unique identifier                             |
+| `queue`               | `String`                  | Routing key                                   |
+| `payload`             | `Vec<u8>`                 | Opaque bytes — handlers deserialize as needed |
+| `metadata`            | `HashMap<String, String>` | Headers, trace context, custom tags           |
+| `status`              | `TaskStatus`              | Lifecycle state                               |
+| `attempts`            | `u32`                     | How many times this task has been tried       |
+| `max_attempts`        | `u32`                     | Retry limit before dead-lettering             |
+| `created_at`          | `DateTime<Utc>`           | Creation timestamp                            |
+| `scheduled_at`        | `Option<DateTime<Utc>>`   | Delayed execution / retry backoff visibility  |
+| `visibility_deadline` | `Option<DateTime<Utc>>`   | Lease expiry for reservation semantics        |
 
 ## Design Goals
 
@@ -118,8 +118,8 @@ cargo test
 ## Roadmap
 
 - [x] **Phase 0** — Workspace scaffold, core types, trait definitions
-- [ ] **Phase 1** — In-memory backend, worker pool, retries, dead-letter queue, basic tracing
-- [ ] **Phase 2** — Redis backend, visibility timeouts, delayed retries, graceful shutdown, metrics
+- [x] **Phase 1** — In-memory backend, worker pool, retries, dead-letter queue, graceful shutdown, tracing
+- [ ] **Phase 2** — Redis backend, visibility timeouts, metrics
 - [ ] **Phase 3** — NATS backend, OpenTelemetry export, leader election, circuit breaker
 
 ## License

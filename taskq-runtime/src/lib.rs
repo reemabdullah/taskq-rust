@@ -1,1 +1,6 @@
-// Worker pool, dispatcher, shutdown, and backpressure — coming in Phase 1.
+mod config;
+mod pool;
+mod worker;
+
+pub use config::WorkerPoolConfig;
+pub use pool::WorkerPool;

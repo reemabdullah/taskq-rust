@@ -4,5 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 taskq-core = { path = "../taskq-core" }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+
+[dev-dependencies]
+taskq-backend-memory = { path = "../taskq-backend-memory" }
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = "0.3"

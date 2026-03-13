@@ -8,5 +8,5 @@ pub mod task;
 pub use backend::QueueBackend;
 pub use error::{HandlerError, QueueError};
 pub use handler::TaskHandler;
-pub use retry::{RetryDecision, RetryPolicy};
+pub use retry::{ExponentialBackoff, RetryDecision, RetryPolicy};
 pub use task::{Task, TaskId, TaskStatus};

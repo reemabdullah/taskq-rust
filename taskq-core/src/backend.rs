@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::error::QueueError;
 use crate::task::{Task, TaskId};
@@ -22,8 +23,13 @@ pub trait QueueBackend: Send + Sync {
 
     /// Negatively acknowledge a task, signaling processing failure.
     ///
-    /// The backend should make the task available for retry.
-    async fn nack(&self, id: &TaskId) -> Result<(), QueueError>;
+    /// When `retry_after` is `Some`, the task should not become visible
+    /// until the specified time. When `None`, it is immediately available.
+    async fn nack(
+        &self,
+        id: &TaskId,
+        retry_after: Option<DateTime<Utc>>,
+    ) -> Result<(), QueueError>;
 
     /// Move a task to the dead-letter queue after exhausting retries.
     async fn move_to_dlq(&self, id: &TaskId) -> Result<(), QueueError>;
